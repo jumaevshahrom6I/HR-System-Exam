@@ -1,0 +1,211 @@
+ШПАРГАЛКА: ЗАПУСК И РАБОТА С DOCKER COMPOSE (hr-system)
+=======================================================
+
+Windows + Git Bash. Все команды запускаются из корня проекта
+(~/Desktop/HR-System, там лежит docker-compose.infra.yaml).
+Нужны: Go, Docker Desktop (должен быть запущен), make (может отсутствовать:
+тогда см. раздел 3).
+
+Мои значения:
+  Postgres:  контейнер hr-postgres, 127.0.0.1:5433, пользователь hr, пароль hr, база hr-db
+  Redis:     контейнер hr-redis, 127.0.0.1:6380, пароль пустой (REDIS_PASSWORD локально пустой)
+  API:       http://localhost:8080
+  Compose:   docker-compose.infra.yaml
+  (порты 5432 и 6379 заняты локальными Postgres и Redis, поэтому 5433 и 6380)
+
+
+1. ПЕРВЫЙ ЗАПУСК
+----------------
+
+cp .env.example .env            # настройки для локального запуска
+make infra-up                   # поднять Postgres и Redis, дождаться healthy
+make run                        # запустить API на http://localhost:8080
+tail -f app.log                 # смотреть логи приложения (APP_ENV=local пишет в файл app.log)
+
+Остановить API: Ctrl+C в терминале с make run (в логе должно появиться `shutting down`).
+
+Если make нет, то те же шаги без make, см. раздел 3.
+
+
+2. MAKE-КОМАНДЫ
+---------------
+
+make infra-up                   # поднять Postgres и Redis
+make infra-down                 # остановить; данные базы сохраняются
+make infra-reset                # удалить всё вместе с данными и поднять заново (миграции применятся с нуля)
+make run                        # запустить API
+
+
+3. ТО ЖЕ САМОЕ БЕЗ MAKE
+-----------------------
+
+docker compose -f docker-compose.infra.yaml up -d --wait     # поднять в фоне и дождаться healthy
+docker compose -f docker-compose.infra.yaml down             # остановить, данные сохраняются
+docker compose -f docker-compose.infra.yaml down -v          # остановить и удалить данные (volume pgdata)
+go run ./cmd/api                                             # запустить API
+
+infra-reset вручную (две команды подряд):
+docker compose -f docker-compose.infra.yaml down -v
+docker compose -f docker-compose.infra.yaml up -d --wait
+
+
+4. СОСТОЯНИЕ И ЛОГИ КОНТЕЙНЕРОВ
+-------------------------------
+
+docker compose -f docker-compose.infra.yaml ps                # список контейнеров и статус (healthy / unhealthy)
+docker compose -f docker-compose.infra.yaml logs -f           # логи обоих контейнеров в реальном времени
+docker compose -f docker-compose.infra.yaml logs -f postgres  # логи только Postgres
+docker compose -f docker-compose.infra.yaml logs -f redis     # логи только Redis
+docker logs --tail 50 hr-postgres                             # последние 50 строк лога Postgres
+docker logs --tail 50 hr-redis                                # последние 50 строк лога Redis
+docker inspect --format '{{.State.Health.Status}}' hr-postgres   # статус healthcheck Postgres
+docker inspect --format '{{.State.Health.Status}}' hr-redis      # статус healthcheck Redis
+
+Оба контейнера должны быть healthy.
+
+Логи приложения (не контейнеров): файл app.log в корне проекта.
+  tail -f app.log
+В нём 4xx пишутся как Warn, 500 как Error (пишет handler/response/response.go),
+каждый запрос пишет middleware Logging (метод, путь, статус, время).
+
+
+5. POSTGRES
+-----------
+
+docker exec -it hr-postgres psql -U hr -d hr-db              # открыть консоль psql
+                                                             # (если пишет "not a TTY": winpty docker exec -it ..., см. раздел 8)
+
+Внутри psql:
+  \dt                           -- список таблиц (после шага 2 ТЗ их 5)
+  \d users                      -- структура таблицы
+  SELECT code FROM roles;       -- роли: hr, employee
+  SELECT id, email, role_id, is_active FROM users;
+  SELECT * FROM departments;
+  SELECT id, first_name, last_name, status FROM employees;
+  \q                            -- выйти
+
+Одной командой, без входа в консоль:
+docker exec hr-postgres psql -U hr -d hr-db -c "\dt"
+docker exec hr-postgres psql -U hr -d hr-db -c "SELECT code FROM roles;"
+docker exec hr-postgres psql -U hr -d hr-db -c "SELECT email FROM users;"
+
+Подключение из IDE (DataGrip, DBeaver, GoLand):
+  host=127.0.0.1 port=5433 user=hr password=hr database=hr-db
+
+
+6. REDIS
+--------
+
+Refresh-токены хранятся в Redis (не в таблице БД). В ключе лежит SHA-256 хэш
+токена, а не сам токен, поэтому по токену из Postman ключ напрямую не найти.
+
+Ключи (из ТЗ):
+  refresh:<хэш>          значение: id пользователя, TTL 30 дней (JWT_REFRESH_TTL)
+  refresh_user:<id>      множество (SET) хэшей токенов пользователя, TTL 30 дней
+
+Проверка ключей одной командой (после login ключ появляется, после logout или refresh старый исчезает):
+docker exec hr-redis redis-cli --scan --pattern 'refresh:*'
+docker exec hr-redis redis-cli --scan --pattern 'refresh_user:*'
+
+Консоль:
+docker exec -it hr-redis redis-cli
+(если пишет "not a TTY": winpty docker exec -it hr-redis redis-cli, см. раздел 8)
+
+Внутри redis-cli:
+  KEYS refresh:*                # все токены (KEYS только для локальной отладки)
+  GET refresh:<хэш>             # id пользователя, которому принадлежит токен
+  TTL refresh:<хэш>             # сколько секунд токену осталось жить
+  SMEMBERS refresh_user:<id>    # хэши всех токенов пользователя
+  DEL refresh:<хэш>             # отозвать токен вручную
+  FLUSHALL                      # удалить всё: все пользователи разлогинятся
+  exit
+
+Пароль Redis локально пустой: redis-cli подключается без -a.
+
+
+7. ПРОВЕРКА API
+---------------
+
+Префикс API: /api/v1. Тело запроса всегда JSON. Ошибки приходят в виде {"error":"текст"}.
+
+# Проверка, что сервер жив (Postgres и Redis отвечают): 200 {"status":"ok"}, иначе 503
+curl -i http://localhost:8080/health
+
+# Вход первым HR (создаётся seed-миграцией 001_auth.sql), в ответе access_token и refresh_token
+curl -i -X POST http://localhost:8080/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"hr@company.local","password":"Admin12345"}'
+
+# Новая пара токенов (старый refresh_token после этого не работает, повторное использование: 401)
+curl -i -X POST http://localhost:8080/api/v1/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token":"<refresh_token>"}'
+
+# Выход (204; refresh_token сразу перестаёт работать)
+curl -i -X POST http://localhost:8080/api/v1/auth/logout \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token":"<refresh_token>"}'
+
+# Свой профиль (нужен access_token любой роли)
+curl -i http://localhost:8080/api/v1/me -H "Authorization: Bearer <access_token>"
+
+# Список отделов (только HR)
+curl -i http://localhost:8080/api/v1/departments -H "Authorization: Bearer <access_token>"
+
+# Создать отдел (только HR): 201, повтор того же имени: 409
+curl -i -X POST http://localhost:8080/api/v1/departments \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"IT"}'
+
+Postman: коллекция hr-system, переменная baseUrl = http://localhost:8080,
+переменная token вставляется вручную, в защищённых запросах Bearer {{token}}.
+
+Остальные ручки (должности, сотрудники и т.д.) добавляются сюда по мере шагов ТЗ.
+
+
+8. ЧАСТЫЕ ПРОБЛЕМЫ
+------------------
+
+"port is already allocated" при make infra-up
+  Порт 5433 или 6380 уже занят другой программой.
+  Найти, кто занял (Git Bash на Windows): netstat -ano | findstr :5433
+  Последнее число в строке это PID процесса; его имя видно в Диспетчере задач (вкладка Подробности).
+  Для Redis то же самое с портом 6380: netstat -ano | findstr :6380
+  Остановить её или поменять порт слева в docker-compose.infra.yaml
+  (127.0.0.1:5433:5432 и 127.0.0.1:6380:6379) и POSTGRES_PORT / REDIS_PORT в .env.
+  Порты 5432 и 6379 не использовать: заняты локальными Postgres и Redis.
+
+"the input device is not a TTY" в Git Bash
+  Добавить winpty перед командой:
+    winpty docker exec -it hr-postgres psql -U hr -d hr-db
+    winpty docker exec -it hr-redis redis-cli
+  Или запускать без -it:
+    docker exec hr-postgres psql -U hr -d hr-db -c "\dt"
+
+"make: command not found" (make не найден)
+  Использовать команды из раздела 3 (docker compose ... и go run ./cmd/api).
+
+"docker: command not found" или "Cannot connect to the Docker daemon"
+  Запустить Docker Desktop, дождаться статуса "running", повторить.
+
+"connection refused" при make run
+  Инфраструктура не поднята или ещё не готова: make infra-up, затем
+  docker compose -f docker-compose.infra.yaml ps — оба контейнера должны быть healthy.
+
+Изменил или добавил файл в migrations/, а в базе ничего не поменялось
+  Миграции выполняются только при первом создании базы: make infra-reset
+  (или две команды из раздела 3). Данные удалятся.
+
+"relation "users" does not exist"
+  База создана до появления миграций: make infra-reset.
+
+"password authentication failed" после смены POSTGRES_PASSWORD в .env
+  Старый пароль хранится в volume pgdata: make infra-reset.
+
+Не видно логов приложения в консоли
+  При APP_ENV=local логи пишутся в файл: tail -f app.log
+
+После login в Redis нет ключей
+  Проверить: docker exec hr-redis redis-cli --scan --pattern 'refresh:*'
+  Если пусто, проверить REDIS_HOST и REDIS_PORT=6380 в .env и app.log.

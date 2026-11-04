@@ -1,0 +1,28 @@
+with-expecter: true
+dir: internal/repository/mocks
+outpkg: mocks
+mockname: "Mock{{.InterfaceName}}"
+filename: "mock_{{.InterfaceName | snakecase}}.go"
+packages:
+  hr-system/internal/repository:
+    interfaces:
+      UserRepository:
+      RoleRepository:
+      RefreshTokenRepository:
+      DepartmentRepository:
+      PositionRepository:
+      EmployeeRepository:
+      SalaryRepository:
+      TimeOffRepository:
+      HistoryRepository:
+  hr-system/internal/service:
+    config:
+      dir: internal/service/mocks
+    interfaces:
+      AuthService:
+      DepartmentService:
+      PositionService:
+      EmployeeService:
+      SalaryService:
+      ReportService:
+      TimeOffService:

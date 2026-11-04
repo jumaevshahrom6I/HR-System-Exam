@@ -1,0 +1,1578 @@
+openapi: 3.0.3
+
+info:
+  title: hr-system API
+  version: 1.0.0
+  description: |
+    API HR-системы (учёт сотрудников). Этап 1: вход и токены, профиль, отделы, должности, сотрудники.
+
+    **Роли.** `hr` управляет сотрудниками, отделами и должностями. `employee` видит только свой профиль
+    (`GET /me`). Операции только для роли `hr` помечены «только HR»; для роли `employee` они отвечают `403`.
+    Публичной регистрации нет: аккаунт сотрудника создаёт HR через `POST /employees`,
+    первого HR создаёт seed-миграция.
+
+    **Токены.** Login возвращает пару токенов:
+
+    - `access_token` — JWT (HS256) на 15 минут. Передаётся в заголовке `Authorization: Bearer <access_token>`.
+      Claims: `sub` (id пользователя), `role` (`hr` или `employee`), `type=access`, `iat`, `exp`.
+    - `refresh_token` — случайная строка (не JWT) на 30 дней, одноразовая. Нужна только для
+      `/auth/refresh` и `/auth/logout`. Сервер хранит в Redis не сам токен, а его SHA-256 хэш.
+
+    **Ошибки** всегда приходят в формате `{"error": "текст"}`. Текст короткий, на английском.
+
+servers:
+  - url: http://localhost:8080
+    description: локальный запуск (make run)
+
+tags:
+  - name: health
+    description: проверка работоспособности сервиса
+  - name: auth
+    description: вход, обновление токенов, выход
+  - name: me
+    description: профиль текущего пользователя
+  - name: departments
+    description: отделы (только HR)
+  - name: positions
+    description: должности (только HR)
+  - name: employees
+    description: сотрудники (только HR)
+  - name: salaries
+    description: зарплаты (этап 2)
+  - name: reports
+    description: отчёты (этап 2, только HR)
+  - name: time-off
+    description: отпуска и больничные
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Проверка работоспособности
+      description: |
+        Без токена и без префикса `/api/v1`. Проверяет соединение с Postgres и Redis (`Ping`).
+      operationId: health
+      responses:
+        '200':
+          description: Сервис работает
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Не прошёл `Ping` Postgres или Redis
+
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: Вход
+      description: |
+        Email приводится к нижнему регистру. Неизвестный email, неверный пароль и отключённый аккаунт
+        (`is_active = false`, например уволенный сотрудник) дают одну и ту же ошибку `401`.
+        Если в теле нет обязательного поля (например, `password`) — `400`.
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Пара токенов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Неверный email или пароль, либо аккаунт отключён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: invalid email or password
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [auth]
+      summary: Обновить пару токенов
+      description: |
+        Refresh-токен одноразовый: сервер находит его и удаляет одной атомарной операцией,
+        затем выдаёт новую пару. Если токен не найден, истёк по сроку (30 дней) или уже использован — `401`.
+        Повторное использование старого токена тоже даёт `401`.
+      operationId: refresh
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '200':
+          description: Новая пара токенов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Refresh-токен недействителен, истёк или уже использован
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/auth/logout:
+    post:
+      tags: [auth]
+      summary: Выход
+      description: |
+        Удаляет refresh-токен из Redis. Ответ `204` и в том случае, если токена уже нет
+        (повторный вызов, токен истёк или был использован).
+      operationId: logout
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '204':
+          description: Refresh-токен удалён (или его уже не было)
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/me:
+    get:
+      tags: [me]
+      summary: Мой профиль
+      description: |
+        Доступно любой роли. Пользователь определяется по access-токену.
+        В поле `employee` — данные сотрудника с отделом и должностью.
+        У HR без записи в `employees` поле `employee` равно `null`.
+      operationId: getMe
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Профиль текущего пользователя
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+              examples:
+                employee:
+                  summary: Сотрудник
+                  value:
+                    id: 2
+                    email: ivan@company.local
+                    role: employee
+                    employee:
+                      id: 1
+                      user_id: 2
+                      email: ivan@company.local
+                      first_name: Ivan
+                      last_name: Petrov
+                      phone: '+992900000000'
+                      department_id: 1
+                      department_name: IT
+                      position_id: 1
+                      position_name: Backend Developer
+                      hire_date: '2026-01-15'
+                      termination_date: null
+                      status: active
+                hr:
+                  summary: HR без записи в employees
+                  value:
+                    id: 1
+                    email: hr@company.local
+                    role: hr
+                    employee: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/departments:
+    get:
+      tags: [departments]
+      summary: Список отделов (только HR)
+      description: Только HR. Если отделов нет, возвращается пустой массив `[]`.
+      operationId: listDepartments
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Список отделов
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Department'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [departments]
+      summary: Создать отдел (только HR)
+      description: |
+        Только HR. Пробелы по краям `name` обрезаются, длина имени — от 1 до 100 символов.
+        Пустое имя или битое тело — `400`.
+      operationId: createDepartment
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DepartmentRequest'
+      responses:
+        '201':
+          description: Отдел создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Department'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Отдел с таким именем уже существует
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/departments/{id}:
+    parameters:
+      - $ref: '#/components/parameters/DepartmentId'
+    get:
+      tags: [departments]
+      summary: Получить отдел (только HR)
+      description: Только HR. Если `id` в пути не число — `400`.
+      operationId: getDepartment
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Отдел
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Department'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags: [departments]
+      summary: Изменить отдел (только HR)
+      description: Только HR. Те же правила для `name`, что и при создании.
+      operationId: updateDepartment
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DepartmentRequest'
+      responses:
+        '200':
+          description: Обновлённый отдел
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Department'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Отдел с таким именем уже существует
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [departments]
+      summary: Удалить отдел (только HR)
+      description: Только HR. Если в отделе есть сотрудники — `409`.
+      operationId: deleteDepartment
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Отдел удалён
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: В отделе есть сотрудники
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/positions:
+    get:
+      tags: [positions]
+      summary: Список должностей (только HR)
+      description: Только HR. Если должностей нет, возвращается пустой массив `[]`.
+      operationId: listPositions
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Список должностей
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Position'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [positions]
+      summary: Создать должность (только HR)
+      description: |
+        Только HR. Пробелы по краям `name` обрезаются, длина имени — от 1 до 100 символов,
+        `base_salary` — не меньше 0. Нарушение этих правил или битое тело — `400`.
+      operationId: createPosition
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PositionRequest'
+      responses:
+        '201':
+          description: Должность создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Position'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Должность с таким именем уже существует
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/positions/{id}:
+    parameters:
+      - $ref: '#/components/parameters/PositionId'
+    get:
+      tags: [positions]
+      summary: Получить должность (только HR)
+      description: Только HR. Если `id` в пути не число — `400`.
+      operationId: getPosition
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Должность
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Position'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags: [positions]
+      summary: Изменить должность (только HR)
+      description: Только HR. Те же правила для `name` и `base_salary`, что и при создании.
+      operationId: updatePosition
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PositionRequest'
+      responses:
+        '200':
+          description: Обновлённая должность
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Position'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Должность с таким именем уже существует
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [positions]
+      summary: Удалить должность (только HR)
+      description: Только HR. Если на должности есть сотрудники — `409`.
+      operationId: deletePosition
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Должность удалена
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: На должности есть сотрудники
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/employees:
+    get:
+      tags: [employees]
+      summary: Список сотрудников (только HR)
+      description: |
+        Только HR. Поиск, фильтры и постраничный вывод. Сортировка: по фамилии, затем по имени.
+        Если параметр некорректен (например, `page=0` или `limit` больше 100) — `400`.
+      operationId: listEmployees
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          required: false
+          description: подстрока в имени, фамилии или email (без учёта регистра)
+          schema:
+            type: string
+            example: iva
+        - name: department_id
+          in: query
+          required: false
+          description: фильтр по id отдела
+          schema:
+            type: integer
+            format: int64
+            example: 1
+        - name: position_id
+          in: query
+          required: false
+          description: фильтр по id должности
+          schema:
+            type: integer
+            format: int64
+            example: 1
+        - name: status
+          in: query
+          required: false
+          description: фильтр по статусу
+          schema:
+            $ref: '#/components/schemas/EmployeeStatus'
+        - name: page
+          in: query
+          required: false
+          description: номер страницы
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+            example: 1
+        - name: limit
+          in: query
+          required: false
+          description: размер страницы
+          schema:
+            type: integer
+            maximum: 100
+            default: 20
+            example: 20
+      responses:
+        '200':
+          description: Страница сотрудников
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmployeePage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [employees]
+      summary: Создать сотрудника (только HR)
+      description: |
+        Только HR. Создаёт аккаунт (`users`, роль `employee`) и запись сотрудника (`employees`)
+        в одной транзакции. Статус нового сотрудника — `active`.
+
+        Проверки: email корректный и ещё не занят (иначе `409`); пароль — 8–72 байта;
+        имя и фамилия — 1–50 символов; `phone` — обязателен, 1–20 символов; `hire_date` — формата `YYYY-MM-DD`;
+        отдел и должность существуют (иначе `400`).
+      operationId: createEmployee
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmployeeCreateRequest'
+      responses:
+        '201':
+          description: Сотрудник создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Employee'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Email уже зарегистрирован
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: email already registered
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/employees/{id}:
+    parameters:
+      - $ref: '#/components/parameters/EmployeeId'
+    get:
+      tags: [employees]
+      summary: Получить сотрудника (только HR)
+      description: Только HR. Если `id` в пути не число — `400`.
+      operationId: getEmployee
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Сотрудник
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Employee'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags: [employees]
+      summary: Изменить сотрудника (только HR)
+      description: |
+        Только HR. Меняются поля из тела запроса: отдел, должность, имя, фамилия, телефон, статус.
+        Отдел и должность должны существовать (иначе `400`), `status` — из списка.
+      operationId: updateEmployee
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmployeeUpdateRequest'
+      responses:
+        '200':
+          description: Обновлённый сотрудник
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Employee'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [employees]
+      summary: Уволить сотрудника (только HR)
+      description: |
+        Только HR. Строка не удаляется: сотрудник получает `status = terminated`,
+        в `termination_date` ставится сегодняшняя дата, аккаунт отключается (`users.is_active = false`,
+        вход запрещён), все refresh-токены сотрудника отзываются.
+      operationId: deleteEmployee
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Сотрудник уволен
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/employees/{id}/salaries:
+    parameters:
+      - $ref: '#/components/parameters/EmployeeId'
+    get:
+      tags: [salaries]
+      summary: Зарплаты сотрудника
+      description: Только HR. Новые записи первыми. Пустой список это `[]`.
+      operationId: listEmployeeSalaries
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Список зарплат
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Salary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [salaries]
+      summary: Добавить зарплату сотруднику
+      description: |
+        Только HR. `amount` больше 0, `effective_date` в формате `YYYY-MM-DD`.
+        Вторая запись на ту же дату у того же сотрудника даёт `409`.
+      operationId: addSalary
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SalaryRequest'
+      responses:
+        '201':
+          description: Запись создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Salary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Запись на эту дату уже есть
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/me/salaries:
+    get:
+      tags: [salaries]
+      summary: Мои зарплаты
+      description: Любая роль. Только свои записи, новые первыми. У HR без записи в `employees` вернётся `[]`.
+      operationId: listMySalaries
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Список зарплат
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Salary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/reports/departments:
+    get:
+      tags: [reports]
+      summary: Отчёт по отделам
+      description: |
+        Только HR. По каждому отделу: число сотрудников (без уволенных), сумма и средняя
+        текущая зарплата (последняя запись не позже сегодняшней даты).
+      operationId: departmentReport
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Строки отчёта
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DepartmentReportRow'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/employees/{id}/history:
+    parameters:
+      - $ref: '#/components/parameters/EmployeeId'
+    get:
+      tags: [employees]
+      summary: История перемещений сотрудника
+      description: Только HR. Новые записи первыми. Текущая запись имеет `end_date = null`.
+      operationId: employeeHistory
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Список записей истории
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PositionHistory'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/employees/export.csv:
+    get:
+      tags: [employees]
+      summary: Выгрузка сотрудников в CSV
+      description: |
+        Только HR. Принимает те же фильтры, что список (`q`, `department_id`, `position_id`, `status`),
+        но без пагинации. Файл в UTF-8 с BOM, открывается в Excel. Ячейки, начинающиеся с `=`, `+`, `-`, `@`,
+        получают в начале апостроф (защита от формул).
+      operationId: exportEmployees
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: q
+          in: query
+          schema: {type: string}
+        - name: department_id
+          in: query
+          schema: {type: integer, format: int64}
+        - name: position_id
+          in: query
+          schema: {type: integer, format: int64}
+        - name: status
+          in: query
+          schema: {type: string, enum: [active, on_leave, terminated]}
+      responses:
+        '200':
+          description: CSV-файл
+          content:
+            text/csv:
+              schema:
+                type: string
+                example: |
+                  id,email,first_name,last_name,phone,department,position,hire_date,status
+                  5,ivan@company.local,Ivan,Petrov,+992900000000,IT,Dev,2026-01-15,active
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/employees/import:
+    post:
+      tags: [employees]
+      summary: Импорт сотрудников из CSV
+      description: |
+        Только HR. Поле формы `file`, до 1 МБ и до 1000 строк. Колонки (порядок любой):
+        `email,password,first_name,last_name,phone,department,position,hire_date`. Отдел и должность задаются
+        названием. Разделитель `,` или `;`, допустим BOM. Каждая строка обрабатывается отдельно: неудачные
+        строки не мешают остальным. Номер строки в `errors[].row` это номер строки в файле, заголовок считается строкой 1.
+      operationId: importEmployees
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Результат импорта
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/time-off:
+    post:
+      tags: [time-off]
+      summary: Подать заявку на отпуск или больничный
+      description: |
+        Любая роль, у которой есть запись сотрудника. `employee_id` берётся из токена. Заявка создаётся со статусом
+        `pending`. Если даты пересекаются с другой заявкой в статусе `pending` или `approved`, ответ `409`.
+      operationId: createTimeOff
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TimeOffRequest'
+      responses:
+        '201':
+          description: Заявка создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimeOff'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Даты пересекаются с другой заявкой
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      tags: [time-off]
+      summary: Список заявок
+      description: HR видит все (можно фильтровать по `status` и `employee_id`), сотрудник только свои.
+      operationId: listTimeOff
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema: {type: string, enum: [pending, approved, rejected]}
+        - name: employee_id
+          in: query
+          description: Только для HR. Для сотрудника игнорируется.
+          schema: {type: integer, format: int64}
+      responses:
+        '200':
+          description: Список заявок
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TimeOff'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/time-off/{id}/status:
+    patch:
+      tags: [time-off]
+      summary: Одобрить или отклонить заявку
+      description: Только HR. Менять можно только заявку в статусе `pending`, иначе `409`.
+      operationId: decideTimeOff
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: integer, format: int64}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [approved, rejected]
+      responses:
+        '200':
+          description: Заявка обновлена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimeOff'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Заявка уже не в статусе pending
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  parameters:
+    DepartmentId:
+      name: id
+      in: path
+      required: true
+      description: id отдела, целое число
+      schema:
+        type: integer
+        format: int64
+        example: 1
+
+    PositionId:
+      name: id
+      in: path
+      required: true
+      description: id должности, целое число
+      schema:
+        type: integer
+        format: int64
+        example: 1
+
+    EmployeeId:
+      name: id
+      in: path
+      required: true
+      description: id сотрудника (`employees.id`), целое число
+      schema:
+        type: integer
+        format: int64
+        example: 1
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: access_token из ответа login или refresh
+
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: ok
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          description: приводится к нижнему регистру
+          example: hr@company.local
+        password:
+          type: string
+          format: password
+          example: Admin12345
+
+    RefreshTokenRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+          example: RtR9HFciplCKU2V1kXdlryPFl6FPwzXvhY4sIaAczj8
+
+    TokenPair:
+      type: object
+      required: [access_token, refresh_token]
+      properties:
+        access_token:
+          type: string
+          description: JWT на 15 минут, передаётся в заголовке Authorization
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        refresh_token:
+          type: string
+          description: случайная строка на 30 дней, одноразовая, нужна только для /auth/refresh и /auth/logout
+          example: RtR9HFciplCKU2V1kXdlryPFl6FPwzXvhY4sIaAczj8
+
+    Role:
+      type: string
+      enum: [hr, employee]
+      description: роль пользователя
+      example: employee
+
+    EmployeeStatus:
+      type: string
+      enum: [active, on_leave, terminated]
+      description: состояние сотрудника
+      example: active
+
+    MeResponse:
+      type: object
+      required: [id, email, role, employee]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: id пользователя (`users.id`)
+          example: 2
+        email:
+          type: string
+          format: email
+          example: ivan@company.local
+        role:
+          $ref: '#/components/schemas/Role'
+        employee:
+          nullable: true
+          description: данные сотрудника; `null` у HR без записи в `employees`
+          allOf:
+            - $ref: '#/components/schemas/Employee'
+
+    DepartmentRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: от 1 до 100 символов после обрезки пробелов, уникально
+          example: IT
+
+    Department:
+      type: object
+      required: [id, name, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 1
+        name:
+          type: string
+          example: IT
+        created_at:
+          type: string
+          format: date-time
+          example: '2026-10-25T12:00:00Z'
+        updated_at:
+          type: string
+          format: date-time
+          example: '2026-10-25T12:00:00Z'
+
+    PositionRequest:
+      type: object
+      required: [name, base_salary]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: от 1 до 100 символов после обрезки пробелов, уникально
+          example: Backend Developer
+        base_salary:
+          type: number
+          format: double
+          minimum: 0
+          description: базовый оклад по должности (ориентир), не меньше 0
+          example: 5000
+
+    Position:
+      type: object
+      required: [id, name, base_salary, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 1
+        name:
+          type: string
+          example: Backend Developer
+        base_salary:
+          type: number
+          format: double
+          example: 5000
+        created_at:
+          type: string
+          format: date-time
+          example: '2026-10-25T12:00:00Z'
+        updated_at:
+          type: string
+          format: date-time
+          example: '2026-10-25T12:00:00Z'
+
+    EmployeeCreateRequest:
+      type: object
+      required: [email, password, first_name, last_name, phone, department_id, position_id, hire_date]
+      properties:
+        email:
+          type: string
+          format: email
+          description: логин сотрудника, хранится в нижнем регистре, уникален
+          example: ivan@company.local
+        password:
+          type: string
+          format: password
+          description: от 8 до 72 байт (ограничение bcrypt)
+          example: Pass12345
+        first_name:
+          type: string
+          minLength: 1
+          maxLength: 50
+          example: Ivan
+        last_name:
+          type: string
+          minLength: 1
+          maxLength: 50
+          example: Petrov
+        phone:
+          type: string
+          minLength: 1
+          maxLength: 20
+          description: обязательное поле, 1–20 символов
+          example: '+992900000000'
+        department_id:
+          type: integer
+          format: int64
+          description: id существующего отдела
+          example: 1
+        position_id:
+          type: integer
+          format: int64
+          description: id существующей должности
+          example: 1
+        hire_date:
+          type: string
+          format: date
+          description: дата приёма, формат YYYY-MM-DD
+          example: '2026-01-15'
+
+    EmployeeUpdateRequest:
+      type: object
+      required: [department_id, position_id, first_name, last_name, phone, status]
+      properties:
+        department_id:
+          type: integer
+          format: int64
+          description: id существующего отдела
+          example: 1
+        position_id:
+          type: integer
+          format: int64
+          description: id существующей должности
+          example: 1
+        first_name:
+          type: string
+          minLength: 1
+          maxLength: 50
+          example: Ivan
+        last_name:
+          type: string
+          minLength: 1
+          maxLength: 50
+          example: Petrov
+        phone:
+          type: string
+          minLength: 1
+          maxLength: 20
+          description: обязательное поле, 1–20 символов
+          example: '+992900000000'
+        status:
+          $ref: '#/components/schemas/EmployeeStatus'
+
+    Employee:
+      type: object
+      required:
+        - id
+        - user_id
+        - email
+        - first_name
+        - last_name
+        - phone
+        - department_id
+        - department_name
+        - position_id
+        - position_name
+        - hire_date
+        - status
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: id сотрудника (`employees.id`)
+          example: 1
+        user_id:
+          type: integer
+          format: int64
+          description: id аккаунта (`users.id`)
+          example: 2
+        email:
+          type: string
+          format: email
+          description: email аккаунта
+          example: ivan@company.local
+        first_name:
+          type: string
+          example: Ivan
+        last_name:
+          type: string
+          example: Petrov
+        phone:
+          type: string
+          example: '+992900000000'
+        department_id:
+          type: integer
+          format: int64
+          example: 1
+        department_name:
+          type: string
+          example: IT
+        position_id:
+          type: integer
+          format: int64
+          example: 1
+        position_name:
+          type: string
+          example: Backend Developer
+        hire_date:
+          type: string
+          format: date
+          example: '2026-01-15'
+        termination_date:
+          type: string
+          format: date
+          nullable: true
+          description: дата увольнения, `null` пока сотрудник не уволен
+        status:
+          $ref: '#/components/schemas/EmployeeStatus'
+
+    EmployeePage:
+      type: object
+      required: [items, total, page, limit]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Employee'
+        total:
+          type: integer
+          description: сколько сотрудников найдено всего (с учётом фильтров)
+          example: 42
+        page:
+          type: integer
+          description: номер текущей страницы
+          example: 1
+        limit:
+          type: integer
+          description: размер страницы
+          example: 20
+
+    SalaryRequest:
+      type: object
+      required: [amount, effective_date]
+      properties:
+        amount:
+          type: number
+          description: сумма, больше 0
+          example: 5000
+        effective_date:
+          type: string
+          format: date
+          description: с какой даты действует
+          example: '2026-02-01'
+
+    Salary:
+      type: object
+      required: [id, employee_id, amount, effective_date, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 1
+        employee_id:
+          type: integer
+          format: int64
+          example: 1
+        amount:
+          type: number
+          example: 5000
+        effective_date:
+          type: string
+          format: date
+          example: '2026-02-01'
+        created_at:
+          type: string
+          format: date-time
+
+    DepartmentReportRow:
+      type: object
+      required: [department_id, department, employees_count, total_salary, avg_salary]
+      properties:
+        department_id:
+          type: integer
+          format: int64
+          example: 1
+        department:
+          type: string
+          example: IT
+        employees_count:
+          type: integer
+          example: 3
+        total_salary:
+          type: number
+          example: 15000
+        avg_salary:
+          type: number
+          example: 5000
+
+    TimeOffRequest:
+      type: object
+      required: [leave_type, start_date, end_date]
+      properties:
+        leave_type:
+          type: string
+          enum: [vacation, sick]
+        start_date:
+          type: string
+          format: date
+          example: '2026-07-01'
+        end_date:
+          type: string
+          format: date
+          description: не раньше start_date
+          example: '2026-07-14'
+
+    TimeOff:
+      type: object
+      required: [id, employee_id, approved_by, leave_type, start_date, end_date, status, created_at, updated_at]
+      properties:
+        id: {type: integer, format: int64, example: 1}
+        employee_id: {type: integer, format: int64, example: 5}
+        approved_by:
+          type: integer
+          format: int64
+          nullable: true
+          description: id аккаунта HR, принявшего решение; null пока заявка pending
+        leave_type: {type: string, enum: [vacation, sick]}
+        start_date: {type: string, format: date, example: '2026-07-01'}
+        end_date: {type: string, format: date, example: '2026-07-14'}
+        status: {type: string, enum: [pending, approved, rejected]}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+
+    PositionHistory:
+      type: object
+      required: [id, employee_id, department_id, department_name, position_id, position_name, start_date, end_date]
+      properties:
+        id: {type: integer, format: int64, example: 2}
+        employee_id: {type: integer, format: int64, example: 5}
+        department_id: {type: integer, format: int64, example: 1}
+        department_name: {type: string, example: IT}
+        position_id: {type: integer, format: int64, example: 2}
+        position_name: {type: string, example: Lead}
+        start_date: {type: string, format: date, example: '2026-06-01'}
+        end_date:
+          type: string
+          format: date
+          nullable: true
+          description: null у текущей записи
+
+    ImportResult:
+      type: object
+      required: [created, errors]
+      properties:
+        created:
+          type: integer
+          example: 2
+        errors:
+          type: array
+          items:
+            type: object
+            required: [row, error]
+            properties:
+              row:
+                type: integer
+                description: номер строки в файле, заголовок это строка 1
+                example: 3
+              error:
+                type: string
+                example: email already registered
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: короткий текст ошибки на английском
+
+  responses:
+    BadRequest:
+      description: |
+        Битый JSON, лишние поля в теле, данные или параметры запроса не прошли проверку,
+        либо `id` в пути не число
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Unauthorized:
+      description: 'Нет заголовка `Authorization: Bearer <access_token>`, токен недействителен или истёк'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Forbidden:
+      description: Недостаточно прав — операция только для роли `hr`
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    NotFound:
+      description: Запись с таким id не найдена
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    InternalError:
+      description: Внутренняя ошибка сервера. Подробности — только в логе
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
