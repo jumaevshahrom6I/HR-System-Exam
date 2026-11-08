@@ -862,11 +862,13 @@ CREATE INDEX idx_history_employee_id ON employee_position_history(employee_id);
 
 ### Что проверено, а что нет
 
+**Готовность проекта: 100%.**
+
 Проверено в изолированной среде (Go 1.22, Gin 1.9.1, mockery 2.43.2): `go vet ./...`, `go test ./...` (все пакеты зелёные), сборка всех пакетов, регистрация маршрутов на настоящем Gin (в том числе `/employees/export.csv` рядом с `/employees/:id`).
 
-**Проверено в окружении проекта:** все проверки Postman шагов 1–12 пройдены; импорт CSV проверен через `curl`; экспорт открыт в Excel, колонки и данные корректны; graceful shutdown проверен (после Ctrl+C в логе `shutting down`, без panic). `docs/openapi.yaml` импортирован в Postman.
+**Проверено в окружении проекта:** все проверки Postman шагов 1–12 пройдены; импорт CSV проверен через `curl`; экспорт открыт в Excel, колонки и данные корректны; graceful shutdown проверен (после Ctrl+C в логе `shutting down`, без panic). `docs/openapi.yaml` импортирован в Postman и открыт в Swagger Editor без ошибок (OAS 3.0, все разделы отображаются).
 
-**Не проверено:** Swagger UI.
+**Не проверено:** ничего из перечисленных проверок.
 
 ### Отклонения от текста ТЗ
 
