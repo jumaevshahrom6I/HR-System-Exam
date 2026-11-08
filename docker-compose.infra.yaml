@@ -9,14 +9,14 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
     ports:
-      - "127.0.0.1:5433:5432"
+      - '127.0.0.1:${POSTGRES_PORT:?set POSTGRES_PORT}:5432'
     volumes:
       - pgdata:/var/lib/postgresql/data
       # SQL-файлы из migrations выполняются один раз — при первом создании базы.
       # Изменили миграцию — пересоздайте базу: make infra-reset
       - ./migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
       interval: 5s
       timeout: 3s
       retries: 10
@@ -27,9 +27,9 @@ services:
     image: redis:7-alpine
     container_name: hr-redis
     ports:
-      - "127.0.0.1:6380:6379"
+      - '127.0.0.1:6380:6379'
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
       timeout: 3s
       retries: 10

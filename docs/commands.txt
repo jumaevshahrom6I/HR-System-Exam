@@ -7,11 +7,11 @@ Windows + Git Bash. Все команды запускаются из корня
 тогда см. раздел 3).
 
 Мои значения:
-  Postgres:  контейнер hr-postgres, 127.0.0.1:5433, пользователь hr, пароль hr, база hr-db
+  Postgres:  контейнер hr-postgres, 127.0.0.1:5432, пользователь hr, пароль hr, база hr-db
   Redis:     контейнер hr-redis, 127.0.0.1:6380, пароль пустой (REDIS_PASSWORD локально пустой)
   API:       http://localhost:8080
   Compose:   docker-compose.infra.yaml
-  (порты 5432 и 6379 заняты локальными Postgres и Redis, поэтому 5433 и 6380)
+  (порты 5432 и 6379 заняты локальными Postgres и Redis, поэтому 5432 и 6380)
 
 
 1. ПЕРВЫЙ ЗАПУСК
@@ -90,7 +90,7 @@ docker exec hr-postgres psql -U hr -d hr-db -c "SELECT code FROM roles;"
 docker exec hr-postgres psql -U hr -d hr-db -c "SELECT email FROM users;"
 
 Подключение из IDE (DataGrip, DBeaver, GoLand):
-  host=127.0.0.1 port=5433 user=hr password=hr database=hr-db
+  host=127.0.0.1 port=5432 user=hr password=hr database=hr-db
 
 
 6. REDIS
@@ -168,12 +168,12 @@ Postman: коллекция hr-system, переменная baseUrl = http://loc
 ------------------
 
 "port is already allocated" при make infra-up
-  Порт 5433 или 6380 уже занят другой программой.
-  Найти, кто занял (Git Bash на Windows): netstat -ano | findstr :5433
+  Порт 5432 или 6380 уже занят другой программой.
+  Найти, кто занял (Git Bash на Windows): netstat -ano | findstr :5432
   Последнее число в строке это PID процесса; его имя видно в Диспетчере задач (вкладка Подробности).
   Для Redis то же самое с портом 6380: netstat -ano | findstr :6380
   Остановить её или поменять порт слева в docker-compose.infra.yaml
-  (127.0.0.1:5433:5432 и 127.0.0.1:6380:6379) и POSTGRES_PORT / REDIS_PORT в .env.
+  (127.0.0.1:5432:5432 и 127.0.0.1:6380:6379) и POSTGRES_PORT / REDIS_PORT в .env.
   Порты 5432 и 6379 не использовать: заняты локальными Postgres и Redis.
 
 "the input device is not a TTY" в Git Bash

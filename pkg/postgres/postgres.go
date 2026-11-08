@@ -13,7 +13,7 @@ import (
 // чтобы pkg не зависел от internal/config. Значения в неё копирует app.go.
 type Config struct {
 	Host     string // где работает база, например localhost
-	Port     string // порт базы, например 5433
+	Port     string // порт базы, например 5432
 	User     string // пользователь базы
 	Password string // пароль пользователя (в логи не пишем!)
 	Database string // имя базы данных
@@ -49,12 +49,12 @@ func NewPool(ctx context.Context, cfg Config) (*pgxpool.Pool, error) {
 
 // dsn собирает строку подключения через url.URL: спецсимволы в пароле экранируются сами.
 // (cfg Config) перед именем значит: это МЕТОД структуры Config, вызывается как cfg.dsn().
-// Итог: postgres://user:pass@localhost:5433/hr-db?sslmode=disable
+// Итог: postgres://user:pass@localhost:5432/hr-db?sslmode=disable
 func (cfg Config) dsn() string {
 	u := url.URL{
 		Scheme:   "postgres",                                    // начало адреса: postgres://
 		User:     url.UserPassword(cfg.User, cfg.Password),      // user:pass@, спецсимволы экранируются
-		Host:     net.JoinHostPort(cfg.Host, cfg.Port),          // localhost:5433
+		Host:     net.JoinHostPort(cfg.Host, cfg.Port),          // localhost:5432
 		Path:     cfg.Database,                                  // /hr-db (слеш добавит u.String() сам)
 		RawQuery: url.Values{"sslmode": {cfg.SSLMode}}.Encode(), // ?sslmode=disable
 	}
