@@ -7,4 +7,4 @@
 *.exe
 *.test
 *.out
-*.pptx
+*.pptx.DS_Store
