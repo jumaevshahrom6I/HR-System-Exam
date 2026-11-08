@@ -864,7 +864,9 @@ CREATE INDEX idx_history_employee_id ON employee_position_history(employee_id);
 
 Проверено в изолированной среде (Go 1.22, Gin 1.9.1, mockery 2.43.2): `go vet ./...`, `go test ./...` (все пакеты зелёные), сборка всех пакетов, регистрация маршрутов на настоящем Gin (в том числе `/employees/export.csv` рядом с `/employees/:id`).
 
-**Не проверено** (нужны твоя машина, Docker и Postman): запуск с настоящими Postgres и Redis (то есть SQL-запросы репозиториев), сборка с Go 1.26 и Gin 1.12, проверки «Проверка:» шагов 1, 3–7 и 10–12. Шаг считается закрытым только после них.
+**Проверено в окружении проекта:** все проверки Postman шагов 1–12 пройдены; импорт CSV проверен через `curl`; экспорт открыт в Excel, колонки и данные корректны; graceful shutdown проверен (после Ctrl+C в логе `shutting down`, без panic). `docs/openapi.yaml` импортирован в Postman.
+
+**Не проверено:** Swagger UI.
 
 ### Отклонения от текста ТЗ
 
