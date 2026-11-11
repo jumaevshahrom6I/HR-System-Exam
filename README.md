@@ -14,7 +14,6 @@ REST API учёта сотрудников: отделы, должности, с
    ```
 
    `JWT_SECRET` не короче 32 символов (`openssl rand -hex 32`). Файл с настоящими значениями не коммитьте и никому не показывайте.
-
 2. **Postgres и Redis** (миграции из `migrations/` применятся при первом создании базы):
 
    ```
@@ -22,17 +21,13 @@ REST API учёта сотрудников: отделы, должности, с
    ```
 
    То же самое делает `make infra-up`. Пересоздать базу с нуля: `make infra-reset`.
-
 3. **Зависимости:** `go mod tidy`.
-
 4. **Первый HR** (пароль вводится с клавиатуры и нигде не сохраняется, в базу идёт только хэш):
 
    ```
    go run ./cmd/seed
    ```
-
 5. **Запуск:** `go run ./cmd/api` (или `make run`). Проверка: `GET http://localhost:8080/health` должен вернуть `{"status":"ok"}`. Остановка по `Ctrl+C` пишет в лог `shutting down`.
-
 6. **Swagger UI** (необязательно): `docker compose -f swagger-ui/docker-compose.yaml up -d`, затем `http://localhost:8081`, кнопка **Authorize**, вставить access-токен из `POST /api/v1/auth/login`.
 
 ## Проверки
@@ -48,16 +43,16 @@ make mocks      # перегенерировать моки после изме�
 
 Все маршруты под `/api/v1`, кроме `/health`. Ответы и ошибки в JSON, ошибка всегда `{"error":"текст"}`. Полное описание: `docs/openapi.yaml`.
 
-| Группа | Маршруты | Кто |
-|---|---|---|
-| вход | `POST /auth/login`, `/auth/refresh`, `/auth/logout` | все |
-| профиль | `GET /me`, `GET /me/salaries` | любая роль |
-| отпуска | `POST /time-off`, `GET /time-off` | любая роль (сотрудник видит свои) |
-| отпуска | `PATCH /time-off/{id}/status` | HR |
-| отделы, должности | `GET/POST /departments`, `GET/PUT/DELETE /departments/{id}`, то же для `/positions` | HR |
-| сотрудники | `GET/POST /employees`, `GET/PUT/DELETE /employees/{id}` (DELETE увольняет) | HR |
-| сотрудники | `GET /employees/export.csv`, `POST /employees/import`, `GET /employees/{id}/history` | HR |
-| зарплаты и отчёт | `GET/POST /employees/{id}/salaries`, `GET /reports/departments` | HR |
+| Группа                     | Маршруты                                                                                 | Кто                                                       |
+| -------------------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
+| вход                         | `POST /auth/login`, `/auth/refresh`, `/auth/logout`                                        | все                                                       |
+| профиль                   | `GET /me`, `GET /me/salaries`                                                                | любая роль                                          |
+| отпуска                   | `POST /time-off`, `GET /time-off`                                                            | любая роль (сотрудник видит свои) |
+| отпуска                   | `PATCH /time-off/{id}/status`                                                                  | HR                                                           |
+| отделы, должности | `GET/POST /departments`, `GET/PUT/DELETE /departments/{id}`, то же для `/positions` | HR                                                           |
+| сотрудники             | `GET/POST /employees`, `GET/PUT/DELETE /employees/{id}` (DELETE увольняет)          | HR                                                           |
+| сотрудники             | `GET /employees/export.csv`, `POST /employees/import`, `GET /employees/{id}/history`       | HR                                                           |
+| зарплаты и отчёт   | `GET/POST /employees/{id}/salaries`, `GET /reports/departments`                              | HR                                                           |
 
 ## Структура
 

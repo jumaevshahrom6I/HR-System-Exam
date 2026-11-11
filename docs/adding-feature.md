@@ -64,13 +64,13 @@ flowchart TB
 
 Аналогия, ресторан:
 
-| Слой | В ресторане | Делает | НЕ делает |
-|---|---|---|---|
-| `middleware` | охранник | логирует запрос, ловит панику, проверяет токен и роль | бизнес-логику |
-| `handler/v1` | официант | разбирает JSON и `{id}`, вызывает сервис, отдаёт JSON, ошибки отдаёт через `response` | решает «можно ли», ходит в БД |
-| `service` | повар | валидирует (trim, длины), применяет правила, оборачивает ошибки | HTTP, JSON, SQL, логи |
-| `repository` | кладовщик | выполняет SQL, переводит ошибки БД в ошибки `models` | бизнес-условия, логи |
-| `models` | меню | структуры и общие ошибки | ввод-вывод, теги `json`/`db` |
+| Слой       | В ресторане | Делает                                                                                                                             | НЕ делает                                    |
+| -------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `middleware` | охранник      | логирует запрос, ловит панику, проверяет токен и роль                                        | бизнес-логику                            |
+| `handler/v1` | официант      | разбирает JSON и `{id}`, вызывает сервис, отдаёт JSON, ошибки отдаёт через `response` | решает «можно ли», ходит в БД |
+| `service`    | повар            | валидирует (trim, длины), применяет правила, оборачивает ошибки                          | HTTP, JSON, SQL, логи                            |
+| `repository` | кладовщик    | выполняет SQL, переводит ошибки БД в ошибки `models`                                                  | бизнес-условия, логи                |
+| `models`     | меню              | структуры и общие ошибки                                                                                            | ввод-вывод, теги `json`/`db`        |
 
 Логи ошибок пишет только HTTP-слой: `response.go` (4xx как Warn, 500 как Error) и middleware `Logging`. Сервис и репозиторий не логируют, иначе одна ошибка попадёт в лог несколько раз.
 
@@ -163,11 +163,11 @@ flowchart RL
     row -- "pgx" --> db -- "toModel()" --> dept -- "в DTO ответа" --> dto --> json
 ```
 
-| Структура | Где лежит | Теги | Зачем |
-|---|---|---|---|
-| запрос и ответ (DTO) | `handler/v1/dto.go` | `json` | формат API |
-| `Department`, `DepartmentInput` | `models/department.go` | нет | с ними работает бизнес-логика |
-| `dbModel` | `repository/department/db_model.go` | `db` | формат строки таблицы |
+| Структура                  | Где лежит                     | Теги | Зачем                                             |
+| ----------------------------------- | ------------------------------------- | -------- | ------------------------------------------------------ |
+| запрос и ответ (DTO)    | `handler/v1/dto.go`                 | `json` | формат API                                       |
+| `Department`, `DepartmentInput` | `models/department.go`              | нет   | с ними работает бизнес-логика |
+| `dbModel`                         | `repository/department/db_model.go` | `db`   | формат строки таблицы               |
 
 ## Как путешествует ошибка
 
@@ -222,22 +222,22 @@ sequenceDiagram
 
 ### Кто что переводит
 
-| Где | Что делает с ошибкой |
-|---|---|
+| Где     | Что делает с ошибкой                                                                                                                                                                                                                                    |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | repository | `pgx.ErrNoRows` → `ErrNotFound`; код `23505` (дубликат) → `ErrConflict`; на удалении код `23503` (есть связанные записи) → `ErrConflict`; `Delete` без затронутых строк → `ErrNotFound` |
-| service | бизнес-отказ (пустое имя, длина) → `ErrInvalidInput` с пояснением; ошибку снизу оборачивает: `fmt.Errorf("...: %w", err)` |
-| handler | `response.ServiceError` по `errors.Is` выбирает HTTP-статус и пишет строку в лог |
+| service    | бизнес-отказ (пустое имя, длина) → `ErrInvalidInput` с пояснением; ошибку снизу оборачивает: `fmt.Errorf("...: %w", err)`                                                                                 |
+| handler    | `response.ServiceError` по `errors.Is` выбирает HTTP-статус и пишет строку в лог                                                                                                                                                     |
 
 Таблица `response.ServiceError` из ТЗ:
 
-| Ошибка `models` | HTTP | Лог |
-|---|---|---|
-| `ErrInvalidInput` | 400 | Warn |
-| `ErrInvalidToken`, `ErrInvalidCredentials` | 401 | Warn |
-| `ErrForbidden` | 403 | Warn |
-| `ErrNotFound` | 404 | Warn |
-| `ErrConflict` | 409 | Warn |
-| всё остальное | 500 | Error |
+| Ошибка `models`                        | HTTP | Лог |
+| ---------------------------------------------- | ---- | ------ |
+| `ErrInvalidInput`                            | 400  | Warn   |
+| `ErrInvalidToken`, `ErrInvalidCredentials` | 401  | Warn   |
+| `ErrForbidden`                               | 403  | Warn   |
+| `ErrNotFound`                                | 404  | Warn   |
+| `ErrConflict`                                | 409  | Warn   |
+| всё остальное                      | 500  | Error  |
 
 Неизвестная ошибка (упала БД, баг) → клиенту 500 без подробностей, в лог идёт вся цепочка. Формат любого ответа с ошибкой: `{"error":"текст"}`, текст короткий, на английском.
 
@@ -252,18 +252,18 @@ if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 
 ## Порядок работы
 
-| № | Что | Файл (путь из ТЗ) |
-|---|---|---|
-| 1 | Таблица | `migrations/002_departments_positions.sql` |
-| 2 | Модели | `internal/models/department.go` |
-| 3 | Интерфейс репозитория + поле в `Repositories` | `internal/repository/repository.go` |
-| 4 | Репозиторий | `internal/repository/department/repository.go`, `db_model.go` |
-| 5 | Интерфейс сервиса + поле в `Services` | `internal/service/service.go` |
-| 6 | Сервис | `internal/service/department/service.go`, `create.go`, `get.go`, `list.go`, `update.go`, `delete.go` |
-| 7 | DTO и ручки | `internal/handler/v1/dto.go`, `internal/handler/v1/department.go` |
-| 8 | Маршруты | `internal/handler/handler.go` (`InitRoutes`) |
-| 9 | Сборка | `internal/app/app.go` |
-| 10 | Проверка в Postman и документация | `docs/openapi.yaml`, `README.md` |
+| № | Что                                                                   | Файл (путь из ТЗ)                                                                                    |
+| -- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| 1  | Таблица                                                           | `migrations/002_departments_positions.sql`                                                                     |
+| 2  | Модели                                                             | `internal/models/department.go`                                                                                |
+| 3  | Интерфейс репозитория + поле в `Repositories` | `internal/repository/repository.go`                                                                            |
+| 4  | Репозиторий                                                   | `internal/repository/department/repository.go`, `db_model.go`                                                |
+| 5  | Интерфейс сервиса + поле в `Services`             | `internal/service/service.go`                                                                                  |
+| 6  | Сервис                                                             | `internal/service/department/service.go`, `create.go`, `get.go`, `list.go`, `update.go`, `delete.go` |
+| 7  | DTO и ручки                                                        | `internal/handler/v1/dto.go`, `internal/handler/v1/department.go`                                            |
+| 8  | Маршруты                                                         | `internal/handler/handler.go` (`InitRoutes`)                                                                 |
+| 9  | Сборка                                                             | `internal/app/app.go`                                                                                          |
+| 10 | Проверка в Postman и документация                  | `docs/openapi.yaml`, `README.md`                                                                             |
 
 Идём по порядку. Дальше не двигаемся, пока проверка текущего шага не прошла.
 
@@ -278,11 +278,13 @@ if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 **Что внутри (словами):** таблица `departments`: `id` SERIAL PK, `name` VARCHAR(100) NOT NULL UNIQUE, `created_at` и `updated_at` TIMESTAMPTZ NOT NULL DEFAULT now(). Готовый SQL лежит в шаге 2 ТЗ.
 
 **Важно:**
+
 - Файлы из `migrations/` выполняются по алфавиту, поэтому номер в начале имени (`001`, `002`, ...).
 - Они применяются только при первом создании базы. Изменили или добавили файл → `make infra-reset` (данные удалятся).
 - Для следующих фич номера по плану ТЗ: `004` зарплаты, `005` отпуска, `006` история.
 
 **Готово, когда:**
+
 - [ ] `make infra-reset` прошёл без ошибок.
 - [ ] `docker exec hr-postgres psql -U hr -d hr-db -c "\dt"` показывает `departments`.
 
@@ -293,12 +295,14 @@ if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 **Файлы:** `internal/models/department.go`, `internal/models/errors.go` (уже есть с шага 3).
 
 **Что внутри (словами):**
+
 - `Department`: ID (`int64`), Name, CreatedAt, UpdatedAt.
 - `DepartmentInput`: только Name.
 - Без тегов `json` и `db`.
 - Новые ошибки для отделов не нужны: хватает `ErrNotFound`, `ErrInvalidInput`, `ErrConflict`.
 
 **Готово, когда:**
+
 - [ ] В файле нет импортов `gin`, `net/http` и `pgx`.
 - [ ] В структурах нет тегов.
 - [ ] `go build ./...` проходит.
@@ -323,6 +327,7 @@ type DepartmentRepository interface {
 ```
 
 **Готово, когда:**
+
 - [ ] Интерфейс и поле в `Repositories` есть.
 - [ ] Пакет не импортирует `service` или `handler`.
 
@@ -333,6 +338,7 @@ type DepartmentRepository interface {
 **Файлы:** `internal/repository/department/repository.go` и `db_model.go`.
 
 **Что внутри (словами):**
+
 - `db_model.go`: структура `dbModel` с тегами `db:"..."` и метод `toModel()`, который превращает её в `models.Department`.
 - `repository.go`: структура с `*pgxpool.Pool`, конструктор `NewRepository(db *pgxpool.Pool)`, 5 методов с SQL.
 - Имена колонок в `SELECT` совпадают с тегами `db`.
@@ -347,6 +353,7 @@ type DepartmentRepository interface {
 - Не логировать.
 
 **Готово, когда:**
+
 - [ ] В пакете нет `log`/`slog` и нет проверок бизнес-правил.
 - [ ] Каждая ошибка БД либо переведена в `models.Err...`, либо обёрнута через `%w`.
 - [ ] `go build ./...` проходит.
@@ -369,6 +376,7 @@ type DepartmentService interface {
 ```
 
 **Готово, когда:**
+
 - [ ] Интерфейс и поле в `Services` есть.
 - [ ] В интерфейсе нет типов из `gin` и `net/http`.
 
@@ -379,6 +387,7 @@ type DepartmentService interface {
 **Файлы:** `internal/service/department/`: `service.go` + по файлу на операцию (`create.go`, `get.go`, `list.go`, `update.go`, `delete.go`).
 
 **Что внутри (словами):**
+
 - `service.go`: структура с полем-интерфейсом `repository.DepartmentRepository`, конструктор `NewService(...)` и строка `var _ service.DepartmentService = (*Service)(nil)` (проверка, что интерфейс реализован).
 - `create.go` и `update.go`: `strings.TrimSpace`, длина имени 1–100 символов через `utf8.RuneCountInString` (кириллица считается по символам, а не по байтам). Не прошло → `fmt.Errorf("%w: ...", models.ErrInvalidInput)`.
 - `get.go`, `list.go`, `delete.go`: вызов репозитория и оборачивание ошибки.
@@ -395,6 +404,7 @@ if err != nil {
 ```
 
 **Готово, когда:**
+
 - [ ] В пакете нет импортов `gin`, `net/http`, `pgx`.
 - [ ] Каждая ошибка снизу обёрнута через `%w`.
 - [ ] Валидация есть и в `Create`, и в `Update`.
@@ -407,6 +417,7 @@ if err != nil {
 **Файлы:** `internal/handler/v1/dto.go` (общий файл всех DTO), `internal/handler/v1/department.go`. Помощники `decodeJSON` и `parseID` лежат в `internal/handler/v1/request.go`, ответы строятся через `internal/handler/response/response.go`.
 
 **Что внутри (словами):**
+
 - DTO запроса: структура с полем `name` (тег `json:"name"`) и преобразование в `models.DepartmentInput`.
 - DTO ответа: `id`, `name`, `created_at`, `updated_at` (snake_case) и преобразование из `*models.Department`.
 - 5 методов общего `Handler`: имя включает сущность (`CreateDepartment`, `GetDepartment`, `ListDepartments`, `UpdateDepartment`, `DeleteDepartment`).
@@ -425,6 +436,7 @@ func (h *Handler) GetDepartment(c *gin.Context) {
 ```
 
 **Готово, когда:**
+
 - [ ] В ручках нет `if` про бизнес-правила.
 - [ ] Ответ содержит только поля из ТЗ (`id`, `name`, `created_at`, `updated_at`).
 - [ ] `go build ./...` проходит.
@@ -436,6 +448,7 @@ func (h *Handler) GetDepartment(c *gin.Context) {
 **Файл:** `internal/handler/handler.go`, метод `InitRoutes()`.
 
 **Что внутри (словами):**
+
 - В начале `InitRoutes()` создать локальную переменную `requireHR`: цепочка из `requireAuth` и `RequireRole("hr")`.
 - 5 маршрутов вида `hr.POST("/departments", h.v1.CreateDepartment)`, `hr.GET("/departments/:id", ...)` и т.д. в группе `hr := api.Group("", requireAuth, requireHR)` (Gin).
 - Общие middleware подключены один раз через `router.Use(...)`: RequestID → CORS → Logging → Recover.
@@ -447,6 +460,7 @@ hr.POST("/departments", h.v1.CreateDepartment)
 ```
 
 **Готово, когда:**
+
 - [ ] 5 маршрутов зарегистрированы.
 - [ ] Запрос без токена даёт 401 (не 404 и не 200).
 
@@ -457,6 +471,7 @@ hr.POST("/departments", h.v1.CreateDepartment)
 **Файл:** `internal/app/app.go`.
 
 **Что внутри (словами):** цепочка всегда одна: `Repositories → Services → Handler → InitRoutes()`. Для отделов добавь:
+
 - строку в `Repositories` (репозиторий отделов получает `*pgxpool.Pool`);
 - строку в `Services` (сервис отделов получает репозиторий).
 
@@ -470,6 +485,7 @@ import (
 ```
 
 **Готово, когда:**
+
 - [ ] `go build ./... && go vet ./...` проходит без ошибок.
 - [ ] `make run` стартует, в `app.log` есть строка `server started`.
 
@@ -479,19 +495,19 @@ import (
 
 Сначала получи токен: `POST {{baseUrl}}/api/v1/auth/login`, тело `{"email":"hr@company.local","password":"<пароль, который ты ввёл в go run ./cmd/seed>"}`.
 
-| № | Запрос | Ожидание |
-|---|---|---|
-| 1 | POST `/api/v1/departments` `{"name":"IT"}` | **201** |
-| 2 | то же имя ещё раз | **409** |
-| 3 | `{"name":""}` | **400** |
-| 4 | GET `/api/v1/departments` | **200** |
-| 5 | GET `/api/v1/departments/999` | **404** |
-| 6 | GET `/api/v1/departments/abc` | **400** |
-| 7 | PUT `/api/v1/departments/1` с новым именем | **200** |
-| 8 | DELETE `/api/v1/departments/1` | **204**, повторный: **404** |
-| 9 | любой запрос без токена | **401** |
-| 10 | токеном `employee` (после шага 6 ТЗ) | **403** |
-| 11 | удалить отдел, в котором есть сотрудники (после шага 6 ТЗ) | **409** |
+| № | Запрос                                                                                            | Ожидание                                 |
+| -- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| 1  | POST `/api/v1/departments` `{"name":"IT"}`                                                          | **201**                                    |
+| 2  | то же имя ещё раз                                                                          | **409**                                    |
+| 3  | `{"name":""}`                                                                                         | **400**                                    |
+| 4  | GET `/api/v1/departments`                                                                             | **200**                                    |
+| 5  | GET `/api/v1/departments/999`                                                                         | **404**                                    |
+| 6  | GET `/api/v1/departments/abc`                                                                         | **400**                                    |
+| 7  | PUT `/api/v1/departments/1` с новым именем                                                | **200**                                    |
+| 8  | DELETE `/api/v1/departments/1`                                                                        | **204**, повторный: **404** |
+| 9  | любой запрос без токена                                                             | **401**                                    |
+| 10 | токеном `employee` (после шага 6 ТЗ)                                                | **403**                                    |
+| 11 | удалить отдел, в котором есть сотрудники (после шага 6 ТЗ) | **409**                                    |
 
 В каждом ответе с ошибкой тело вида `{"error":"текст"}`, а в `app.log` строка: Warn для 4xx, Error для 500.
 
@@ -504,6 +520,7 @@ import (
 ## Если нужна настройка из конфига
 
 В ТЗ конфиг описан так: структура `Config` с тегами `envconfig`, `Load()` читает `.env` через `godotenv` (файл `internal/config/config.go`). Для новой настройки:
+
 1. добавить поле в структуру в `config.go`;
 2. добавить переменную в `.env.example` и в `.env`;
 3. передать значение в конструктор сервиса в `app.go`.
@@ -516,13 +533,13 @@ import (
 
 ## Чек-лист фичи целиком
 
-- [ ] Миграция с номером, `make infra-reset`.
-- [ ] `models`: сущность и `...Input` без тегов, id типа `int64`.
-- [ ] `repository.go`: интерфейс и поле в `Repositories`; пакет сущности с `dbModel`, только SQL, ошибки БД переведены (`ErrNotFound`, `ErrConflict`), без логов.
-- [ ] `service.go`: интерфейс и поле в `Services`; `var _ service.XxxService = (*Service)(nil)`; ошибки обёрнуты через `%w`; нет HTTP, SQL и логов.
-- [ ] Handler: DTO с json-тегами, ручка «разобрать → сервис → ответить», ошибки через `response`.
-- [ ] Маршруты в `InitRoutes` через `requireHR`.
-- [ ] Сборка в `app.go`: строка в `Repositories` и в `Services`.
-- [ ] `go build ./... && go vet ./...`.
-- [ ] Все коды из таблицы Postman совпали.
-- [ ] `docs/openapi.yaml` и `README.md` обновлены.
+- [X] Миграция с номером, `make infra-reset`.
+- [X] `models`: сущность и `...Input` без тегов, id типа `int64`.
+- [X] `repository.go`: интерфейс и поле в `Repositories`; пакет сущности с `dbModel`, только SQL, ошибки БД переведены (`ErrNotFound`, `ErrConflict`), без логов.
+- [X] `service.go`: интерфейс и поле в `Services`; `var _ service.XxxService = (*Service)(nil)`; ошибки обёрнуты через `%w`; нет HTTP, SQL и логов.
+- [X] Handler: DTO с json-тегами, ручка «разобрать → сервис → ответить», ошибки через `response`.
+- [X] Маршруты в `InitRoutes` через `requireHR`.
+- [X] Сборка в `app.go`: строка в `Repositories` и в `Services`.
+- [X] `go build ./... && go vet ./...`.
+- [X] Все коды из таблицы Postman совпали.
+- [X] `docs/openapi.yaml` и `README.md` обновлены.
